@@ -15,9 +15,11 @@ Y_SECRET = os.getenv('Y_SECRET')
 cred_mgr = SpotifyClientCredentials(client_id=S_ID, client_secret=S_SECRET)
 sp = spotipy.Spotify(auth_manager=cred_mgr)
 
-playlist_link = "https://open.spotify.com/playlist/7MvoTLHVkJzFJtpE0WoWQm?si=6_7Z8STkTZWb2acGnn72zw"
+playlist_link = input("Enter playlist link:")
 playlist_id = playlist_link.split('/')[-1].split('?')[0]
 playlist = sp.playlist_tracks(playlist_id)
+playlistName = sp.playlist(playlist_id)['name']
+playlistDesc = sp.playlist(playlist_id)['description']
 
 tracks = []
 limit = 100
@@ -42,7 +44,7 @@ ytmusic = YTMusic("oauth.json", oauth_credentials=OAuthCredentials(
     client_id=Y_ID, client_secret=Y_SECRET))
 
 yt_playlist_id = ytmusic.create_playlist(
-    "Spotify Transfer", "Songs from Spotify playlist")
+    playlistName, playlistDesc)
 
 for song in spotify_songs:
     search_results = ytmusic.search(song, filter="songs")
