@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>SpotTransfer</title>
+        <link rel="stylesheet" href="/static/style.css" />
+    </head>
+
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>SpotTransfer</h1>
+            </div>
+
+            <div class="section">
+                <h2>Connect YouTube</h2>
+                {% if youtube_authenticated %}
+                <div class="status-box success-box">
+                    YouTube Music Connected
+                </div>
+                <button class="secondary" onclick="handleDisconnect()">
+                    Disconnect
+                </button>
+                {% else %}
+                <div class="status-box warning-box">
+                    Please connect your YouTube account to continue
+                </div>
+                <button onclick="handleAuthorize()">
+                    Connect YouTube Account
+                </button>
+                <div class="info-box" style="margin-top: 1rem">
+                    <strong>Note:</strong> YouTube API has a daily quota limit
+                    that can impact transfers.
+                </div>
+                {% endif %}
+            </div>
+
+            <hr />
+
+            <div class="section">
+                <h2>Transfer Playlist</h2>
+                <input
+                    type="text"
+                    id="playlistUrl"
+                    placeholder="https://open.spotify.com/playlist/..."
+                    {%
+                    if
+                    not
+                    youtube_authenticated
+                    %}disabled{%
+                    endif
+                    %}
+                />
+                <button
+                    id="transferBtn"
+                    onclick="handleStartTransfer()"
+                    {%
+                    if
+                    not
+                    youtube_authenticated
+                    %}disabled{%
+                    endif
+                    %}
+                >
+                    Start Transfer
+                </button>
+            </div>
+
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill">0%</div>
+                </div>
+
+                <div class="stats">
+                    <div class="stat-box">
+                        <div class="label">Total</div>
+                        <div class="value" id="totalTracks">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="label">Added</div>
+                        <div class="value" id="addedTracks">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="label">Not Found</div>
+                        <div class="value" id="notFoundTracks">0</div>
+                    </div>
+                </div>
+
+                <div class="current-track" id="currentTrack">
+                    <span class="spinner"></span> Initializing...
+                </div>
+
+                <div id="quotaWarning"></div>
+                <div id="notFoundContainer"></div>
+            </div>
+
+            <hr />
+        </div>
+
+        <script src="/static/script.js"></script>
+    </body>
+</html>
