@@ -12,6 +12,7 @@ from flask_session import Session
 from flask_wtf.csrf import CSRFProtect
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+import logging
 import os
 import re
 import json
@@ -40,6 +41,7 @@ SPOTIFY_PLAYLIST_REGEX = re.compile(
 
 
 app = Flask(__name__)
+app.logger.setLevel(logging.CRITICAL)
 
 
 def create_redis_client(decode_responses=True):
@@ -48,6 +50,7 @@ def create_redis_client(decode_responses=True):
         host=os.environ.get("REDIS_HOST", "localhost"),
         port=int(os.environ.get("REDIS_PORT", 6379)),
         db=int(os.environ.get("REDIS_DB", 0)),
+        username=os.environ.get("REDIS_USERNAME", "default"),
         password=os.environ.get("REDIS_PASSWORD", None),
         decode_responses=decode_responses,
     )
@@ -246,7 +249,6 @@ def search_youtube_music(youtube, query):
 
 
 def create_youtube_playlist(youtube, title, description):
-    """Create a new playlist on YouTube"""
     try:
         playlist = (
             youtube.playlists()
@@ -263,8 +265,11 @@ def create_youtube_playlist(youtube, title, description):
             .execute()
         )
         return playlist["id"]
-    except Exception as e:
-        app.logger.debug(f"Error creating YouTube playlist: {e}")
+
+    except HttpError as e:
+        if is_quota_exceeded(e):
+            raise Exception("QUOTA_EXCEEDED")
+        app.logger.exception("Error creating YouTube playlist")
         return None
 
 
@@ -564,4 +569,4 @@ if __name__ == "__main__":
         app.logger.warning("✗ Redis connection failed")
         app.logger.warning("Please ensure Redis is running: redis-server")
 
-    app.run(debug=False, port=5000)
+    app.run(debug=True, port=5000)
