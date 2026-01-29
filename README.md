@@ -1,75 +1,164 @@
-# Spotify to YouTube Music Playlist Transfer
+# SpotTransfer - Spotify to YouTube Music Playlist Transfer
 
-A simple Python script to transfer your Spotify playlists to YouTube Music.
+A Flask web application that transfers your Spotify playlists to YouTube Music with real-time progress tracking and intelligent caching.
 
 ## Description
 
-This tool allows you to easily transfer your Spotify playlists to YouTube Music. It fetches all tracks from a Spotify playlist and creates a new playlist with the same tracks on YouTube Music.
+SpotTransfer provides a user-friendly web interface to transfer your Spotify playlists to YouTube Music. The application features OAuth authentication, Redis caching for improved performance, and real-time progress updates during transfer.
 
 ## Features
 
-- Transfer complete Spotify playlists to YouTube Music
+- OAuth 2.0 authentication for YouTube Music
+- Redis caching for playlist data and search results
 - Handles large playlists with pagination
 - Preserves playlist name and description
-- Simple command-line interface
+- Track-by-track transfer with status updates
+- YouTube API quota management and error handling
+- Lists tracks that could not be found on YouTube Music
 
 ## Prerequisites
 
 - Python 3.6 or higher
+- Redis server
 - Spotify Developer account and API credentials
-- YouTube Music/Google OAuth credentials
+- Google Cloud project with YouTube Data API v3 enabled
+- OAuth 2.0 credentials for YouTube
 
 ## Installation
 
 1. Clone the repository:
-   ```
-   git clone https://github.com/yourusername/spotify-to-ytmusic.git
-   cd spotify-to-ytmusic
+   ```bash
+   git clone https://github.com/yourusername/spottransfer.git
+   cd spottransfer
    ```
 
 2. Install required packages:
-   ```
+   ```bash
    pip install -r requirements.txt
    ```
 
-3. Set up environment variables:
+3. Set up Redis:
+   - Install Redis on your system
+   - Start the Redis server:
+     ```bash
+     redis-server
+     ```
+
+4. Configure environment variables:
    - Copy `.env.example` to `.env`
-   - Fill in your API credentials:
-     - `S_ID`: Spotify Client ID
-     - `S_SECRET`: Spotify Client Secret
-     - `Y_ID`: YouTube/Google Client ID
-     - `Y_SECRET`: YouTube/Google Client Secret
+   - Fill in your API credentials (see Configuration section below)
+
+## Configuration
+
+Create a `.env` file with the following variables:
+
+```
+SPOTIFY_CLIENT_ID=your_spotify_client_id
+SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+REDIRECT_URI=http://localhost:5000/oauth2callback
+FLASK_SECRET_KEY=your_random_secret_key
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=
+```
 
 ## Setting Up API Access
 
 ### Spotify API
+
 1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/)
 2. Create a new application
 3. Note your Client ID and Client Secret
-4. Add these to your `.env` file
+4. Add these credentials to your `.env` file
 
-### YouTube Music API
-1. Set up a project in the [Google Cloud Console](https://console.cloud.google.com/)
-2. Create OAuth credentials (TV client type)
-3. Download the credentials and use them with the ytmusicapi setup
-4. Set up OAuth:
-   ```
-   python -m ytmusicapi oauth
-   ```
-   This will create the `oauth.json` file needed for authentication.
+### YouTube Data API
+
+1. Create a project in the [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the YouTube Data API v3
+3. Create OAuth 2.0 credentials:
+   - Application type: Web application
+   - Authorized redirect URIs: `http://localhost:5000/oauth2callback`
+4. Download the credentials and add the Client ID and Client Secret to your `.env` file
+
+Note: The YouTube Data API has daily quota limits. The application will notify you if the quota is exceeded.
 
 ## Usage
 
-1. Run the script:
-   ```
-   python main.py
+1. Start the Flask application:
+   ```bash
+   python app.py
    ```
 
-2. When prompted, enter the Spotify playlist link.
-   Example: `https://open.spotify.com/playlist/37i9dQZEVXcJZyENOWUFo7`
+2. Open your browser and navigate to:
+   ```
+   http://localhost:5000
+   ```
 
-3. The script will:
+3. Connect your YouTube account:
+   - Click "Connect YouTube Account"
+   - Authorize the application in the popup window
+   - The popup will close automatically after authorization
+
+4. Transfer a playlist:
+   - Paste your Spotify playlist URL in the input field
+   - Example: `https://open.spotify.com/playlist/37i9dQZEVXcJZyENOWUFo7`
+   - Click "Start Transfer"
+   - Monitor the real-time progress as tracks are transferred
+
+5. The application will:
    - Fetch all tracks from the Spotify playlist
-   - Create a new playlist on YouTube Music with the same name and description
-   - Search for each track on YouTube Music and add it to the new playlist
-   - Display progress and results in the terminal
+   - Create a new private playlist on YouTube Music
+   - Search for each track on YouTube Music
+   - Add found tracks to the playlist
+   - Display a list of tracks that could not be found
+
+## Troubleshooting
+
+### Redis Connection Issues
+
+If you see "Redis connection failed":
+- Ensure Redis is installed and running
+- Check Redis connection settings in `.env`
+- Verify Redis is accessible on the specified host and port
+
+### YouTube API Quota Exceeded
+
+The YouTube Data API has a daily quota limit. If exceeded:
+- The application will stop the transfer and notify you
+- Already transferred tracks will remain in the playlist
+- Quota resets at midnight Pacific Time
+- You can continue the transfer the next day
+
+### Authentication Issues
+
+If OAuth authentication fails:
+- Clear your browser cookies
+- Verify your Google OAuth credentials in `.env`
+- Check that the redirect URI matches exactly in both Google Cloud Console and `.env`
+- Ensure the OAuth popup is not blocked by your browser
+
+## Project Structure
+
+```
+spottransfer/
+├── app.py                 # Main Flask application
+├── requirements.txt       # Python dependencies
+├── .env.example          # Environment variables template
+├── .gitignore            # Git ignore rules
+├── static/
+│   ├── script.js         # Frontend JavaScript
+│   └── style.css         # Application styles
+└── templates/
+    └── index.html        # Main HTML template
+```
+
+## License
+
+This project is open source and available under the MIT License.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
