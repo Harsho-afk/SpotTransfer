@@ -39,14 +39,12 @@ app.config.update(
 )
 csrf = CSRFProtect(app)
 
-# Redis key prefixes
 SPOTIFY_CACHE_PREFIX = "spottransfer:spotify:"
-
-# TTL settings (in seconds)
 SPOTIFY_CACHE_TTL = 3600  # 1 hour
-
-# Google OAuth scopes
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
+SPOTIFY_PLAYLIST_REGEX = re.compile(
+    r"^https://open\.spotify\.com/playlist/[A-Za-z0-9]+(\?.*)?$"
+)
 
 
 def create_redis_client(decode_responses=True):
@@ -96,12 +94,6 @@ def get_spotify_client():
         client_id=client_id, client_secret=client_secret
     )
     return spotipy.Spotify(auth_manager=auth_manager)
-
-
-def extract_playlist_id(url):
-    """Extract playlist ID from Spotify URL"""
-    match = re.search(r"playlist/([a-zA-Z0-9]+)", url)
-    return match.group(1) if match else None
 
 
 def get_cached_playlist(playlist_id):
@@ -272,6 +264,39 @@ def add_to_youtube_playlist(youtube, playlist_id, video_id, max_retries=3):
     return False
 
 
+def validate_playlist_url(url):
+    if not isinstance(url, str):
+        return "Playlist URL must be a string"
+
+    url = url.strip()
+    if not url:
+        return "Playlist URL is required"
+
+    if len(url) > 500:
+        return "Playlist URL is too long"
+
+    if not SPOTIFY_PLAYLIST_REGEX.match(url):
+        return "Invalid Spotify playlist URL"
+
+    return None
+
+
+def validate_track_input(track_name, playlist_id):
+    if not isinstance(track_name, str) or not track_name.strip():
+        return "Invalid track name"
+
+    if len(track_name) > 300:
+        return "Track name too long"
+
+    if not isinstance(playlist_id, str) or not playlist_id.strip():
+        return "Invalid playlist ID"
+
+    if len(playlist_id) > 100:
+        return "Invalid playlist ID"
+
+    return None
+
+
 @app.errorhandler(Exception)
 def handle_redis_decode_error(e):
     """Handle Redis decode errors by clearing the session"""
@@ -361,11 +386,20 @@ def transfer():
     if "credentials" not in session:
         return jsonify({"error": "Not authenticated"}), 401
 
-    playlist_url = request.json.get("playlist_url")
-    if not playlist_url:
-        return jsonify({"error": "No playlist URL provided"}), 400
+    if not request.is_json:
+        return jsonify({"error": "Invalid request format"}), 400
 
-    playlist_id = extract_playlist_id(playlist_url)
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Missing request body"}), 400
+
+    playlist_url = data.get("playlist_url")
+    error = validate_playlist_url(playlist_url)
+    if error:
+        return jsonify({"error": error}), 400
+
+    match = re.search(r"playlist/([a-zA-Z0-9]+)", playlist_url)
+    playlist_id = match.group(1) if match else None
     if not playlist_id:
         return jsonify({"error": "Invalid Spotify URL"}), 400
 
@@ -425,12 +459,19 @@ def transfer_track():
     if "credentials" not in session:
         return jsonify({"error": "Not authenticated"}), 401
 
-    data = request.json
+    if not request.is_json:
+        return jsonify({"error": "Invalid request format"}), 400
+
+    data = request.get_json(silent=True)
+    if not data:
+        return jsonify({"error": "Missing request body"}), 400
+
     track_name = data.get("track_name")
     playlist_id = data.get("playlist_id")
 
-    if not track_name or not playlist_id:
-        return jsonify({"error": "Missing track_name or playlist_id"}), 400
+    error = validate_track_input(track_name, playlist_id)
+    if error:
+        return jsonify({"error": error}), 400
 
     try:
         credentials = Credentials(**session["credentials"])

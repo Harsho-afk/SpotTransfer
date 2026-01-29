@@ -14,6 +14,11 @@ async function handleStartTransfer() {
         return;
     }
 
+    if (!isValidSpotifyPlaylistUrl(playlistUrl)) {
+        showError('Please enter a valid Spotify playlist URL');
+        return;
+    }
+
     if (AppState.transferInProgress) {
         return;
     }
@@ -217,4 +222,8 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+function isValidSpotifyPlaylistUrl(url) {
+    return /^https:\/\/open\.spotify\.com\/playlist\/[A-Za-z0-9]+/.test(url);
 }
