@@ -1,9 +1,9 @@
-Flask==3.0.0
-Flask-Session==0.6.0
+dotenv==0.9.9
+Flask==3.1.2
+Flask-Limiter==4.1.1
+Flask-Session==0.8.0
+Flask-WTF==1.2.2
+google-api-python-client==2.188.0
+google-auth-oauthlib==1.2.4
+redis==7.1.0
 spotipy==2.25.2
-google-auth==2.25.2
-google-auth-oauthlib==1.2.0
-google-auth-httplib2==0.2.0
-google-api-python-client==2.111.0
-python-dotenv==1.0.0
-redis==5.0.1
