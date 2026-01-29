@@ -19,9 +19,7 @@ async function handleStartTransfer() {
         return;
     }
 
-    if (AppState.transferInProgress) {
-        return;
-    }
+    if (AppState.transferInProgress) return;
 
     AppState.transferInProgress = true;
     disableTransferButton();
@@ -56,7 +54,9 @@ async function transferPlaylist(playlistUrl) {
     enableProgressContainer();
     updateStatus('Fetching playlist from Spotify...');
     document.getElementById('totalTracks').textContent = data.total_tracks;
+
     updateStatus(`Found playlist: ${data.playlist_name}. Starting transfer...`);
+
     await transferTracks(data.tracks, data.playlist_id, data.total_tracks);
 }
 
@@ -66,23 +66,28 @@ async function transferTracks(tracks, playlistId, totalTracks) {
     const notFoundList = [];
 
     for (let i = 0; i < tracks.length; i++) {
-        if (result.error === 'Session expired') {
+        const track = tracks[i];
+        updateStatus(`Searching: ${track}`);
+
+        const result = await transferSingleTrack(track, playlistId);
+
+        if (result?.error === 'Session expired') {
             showError('Session expired. Please sign in again.');
             window.location.reload();
             return;
         }
-        const track = tracks[i];
-        updateStatus(`Searching: ${track}`);
-        const result = await transferSingleTrack(track, playlistId);
 
         if (result.quota_exceeded) {
             const remainingTracks = tracks.slice(i);
 
             notFound += remainingTracks.length;
             notFoundList.push(...remainingTracks);
+
             updateStats(added, notFound);
             updateProgress(i, tracks.length);
+
             showQuotaExceeded(i, added, totalTracks, remainingTracks.length);
+
             showCompletion(notFoundList);
             return;
         }
@@ -98,6 +103,7 @@ async function transferTracks(tracks, playlistId, totalTracks) {
 
         updateStats(added, notFound);
         updateProgress(i + 1, tracks.length);
+
         await sleep(100);
     }
 
@@ -150,6 +156,18 @@ function disableProgressContainer() {
     document.getElementById('progressContainer').style.display = 'none';
 }
 
+function disableTransferButton() {
+    const btn = document.getElementById('transferBtn');
+    btn.disabled = true;
+    btn.textContent = 'Transfer in Progress...';
+}
+
+function enableTransferButton() {
+    const btn = document.getElementById('transferBtn');
+    btn.disabled = false;
+    btn.textContent = 'Start Transfer';
+}
+
 function updateStatus(message, showSpinner = true) {
     const el = document.getElementById('currentTrack');
     if (showSpinner) {
@@ -166,9 +184,9 @@ function updateStats(added, notFound) {
 
 function updateProgress(current, total) {
     const progress = total === 0 ? 0 : (current / total) * 100;
-    const progressFill = document.getElementById('progressFill');
-    progressFill.style.width = progress + '%';
-    progressFill.textContent = Math.round(progress) + '%';
+    const fill = document.getElementById('progressFill');
+    fill.style.width = `${progress}%`;
+    fill.textContent = `${Math.round(progress)}%`;
 }
 
 function showQuotaExceeded(
@@ -185,10 +203,9 @@ function showQuotaExceeded(
             <br>
             Processed ${currentIndex} tracks before quota limit was reached.
             <br>
-            Remaining ${remainingCount} tracks were not completed and have been added to the "Not Found" list.
+            Remaining ${remainingCount} tracks were not completed.
             <br><br>
-            The YouTube Data API quota resets daily at midnight Pacific Time (PST/PDT).
-            You can continue transferring the remaining tracks tomorrow.
+            Quota resets daily at midnight Pacific Time.
         </div>
     `;
 }
@@ -196,41 +213,29 @@ function showQuotaExceeded(
 function showCompletion(notFoundList) {
     updateStatus('Transfer Complete!', false);
 
-    if (notFoundList.length > 0) {
-        const notFoundHtml = notFoundList
-            .map((track) => `<div>${escapeHtml(track)}</div>`)
-            .join('');
-        document.getElementById('notFoundContainer').innerHTML = `
-            <div class="not-found-section">
-                <h3>Tracks Not Found (${notFoundList.length})</h3>
-                <div class="not-found-list">
-                    ${notFoundHtml}
-                </div>
-            </div>
-        `;
-    } else {
+    if (notFoundList.length === 0) {
         document.getElementById('notFoundContainer').innerHTML = `
             <div class="info-box" style="margin-top: 5px;">
                 All tracks processed successfully.
             </div>
         `;
+        return;
     }
+
+    const html = notFoundList
+        .map((track) => `<div>${escapeHtml(track)}</div>`)
+        .join('');
+
+    document.getElementById('notFoundContainer').innerHTML = `
+        <div class="not-found-section">
+            <h3>Tracks Not Found (${notFoundList.length})</h3>
+            <div class="not-found-list">${html}</div>
+        </div>
+    `;
 }
 
 function showError(message) {
     alert('Error: ' + message);
-}
-
-function disableTransferButton() {
-    const btn = document.getElementById('transferBtn');
-    btn.disabled = true;
-    btn.textContent = 'Transfer in Progress...';
-}
-
-function enableTransferButton() {
-    const btn = document.getElementById('transferBtn');
-    btn.disabled = false;
-    btn.textContent = 'Start Transfer';
 }
 
 function sleep(ms) {

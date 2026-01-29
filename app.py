@@ -9,27 +9,27 @@ from flask import (
     make_response,
 )
 from flask_session import Session
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
+from flask_wtf.csrf import CSRFProtect
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 import os
 import re
 import json
-import redis
 import time
+import redis
+from datetime import timedelta
 from dotenv import load_dotenv
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from flask_wtf.csrf import CSRFProtect
-from datetime import timedelta
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 
 load_dotenv()
+
 if os.environ.get("FLASK_DEVELOPMENT") == "TRUE":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
-
 
 SPOTIFY_CACHE_PREFIX = "spottransfer:spotify:"
 SPOTIFY_CACHE_TTL = 3600  # 1 hour
@@ -37,6 +37,49 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 SPOTIFY_PLAYLIST_REGEX = re.compile(
     r"^https://open\.spotify\.com/playlist/[A-Za-z0-9]+(\?.*)?$"
 )
+
+
+app = Flask(__name__)
+
+
+def create_redis_client(decode_responses=True):
+    """Create a Redis client with common configuration"""
+    return redis.Redis(
+        host=os.environ.get("REDIS_HOST", "localhost"),
+        port=int(os.environ.get("REDIS_PORT", 6379)),
+        db=int(os.environ.get("REDIS_DB", 0)),
+        password=os.environ.get("REDIS_PASSWORD", None),
+        decode_responses=decode_responses,
+    )
+
+
+redis_session_client = create_redis_client(decode_responses=False)  # binary data
+redis_client = create_redis_client(decode_responses=True)  # string data
+
+app.config.update(
+    SECRET_KEY=os.environ.get("FLASK_SECRET_KEY"),
+    SESSION_TYPE="redis",
+    SESSION_REDIS=redis_session_client,
+    SESSION_USE_SIGNER=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=not app.debug,
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=6),
+)
+
+Session(app)
+csrf = CSRFProtect(app)
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    storage_uri=os.environ.get("REDIS_URL"),
+    default_limits=["200 per day", "50 per hour"],
+)
+
+
+def internal_error(message="Internal server error"):
+    return jsonify({"error": message}), 500
 
 
 def is_quota_exceeded(error: HttpError) -> bool:
@@ -58,55 +101,37 @@ def is_quota_exceeded(error: HttpError) -> bool:
         return False
 
 
-def create_redis_client(decode_responses=True):
-    """Create a Redis client with common configuration"""
-    return redis.Redis(
-        host=os.environ.get("REDIS_HOST", "localhost"),
-        port=int(os.environ.get("REDIS_PORT", 6379)),
-        db=int(os.environ.get("REDIS_DB", 0)),
-        password=os.environ.get("REDIS_PASSWORD", None),
-        decode_responses=decode_responses,
-    )
+def validate_playlist_url(url):
+    if not isinstance(url, str):
+        return "Playlist URL must be a string"
+
+    url = url.strip()
+    if not url:
+        return "Playlist URL is required"
+
+    if len(url) > 500:
+        return "Playlist URL is too long"
+
+    if not SPOTIFY_PLAYLIST_REGEX.match(url):
+        return "Invalid Spotify playlist URL"
+
+    return None
 
 
-redis_session_client = create_redis_client(decode_responses=False)  # binary data
-redis_client = create_redis_client(decode_responses=True)  # string data
-app = Flask(__name__)
+def validate_track_input(track_name, playlist_id):
+    if not isinstance(track_name, str) or not track_name.strip():
+        return "Invalid track name"
 
-# Session configuration
-app.config.update(
-    SECRET_KEY=os.environ.get("FLASK_SECRET_KEY"),
-    SESSION_TYPE="redis",
-    SESSION_REDIS=redis_session_client,
-    SESSION_USE_SIGNER=True,
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=not app.debug,
-    PERMANENT_SESSION_LIFETIME=timedelta(hours=6),
-)
-csrf = CSRFProtect(app)
-app.config["SESSION_REDIS"] = redis_session_client
-Session(app)
+    if len(track_name) > 300:
+        return "Track name too long"
 
-limiter = Limiter(
-    key_func=get_remote_address,
-    app=app,
-    storage_uri=os.environ.get("REDIS_URL"),
-    default_limits=["200 per day", "50 per hour"],
-)
+    if not isinstance(playlist_id, str) or not playlist_id.strip():
+        return "Invalid playlist ID"
 
+    if len(playlist_id) > 100:
+        return "Invalid playlist ID"
 
-def get_ytclient_config():
-    """Get Google OAuth client configuration"""
-    return {
-        "web": {
-            "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
-            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
-            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": os.environ.get("REDIRECT_URI"),
-        }
-    }
+    return None
 
 
 def get_spotify_client():
@@ -121,29 +146,6 @@ def get_spotify_client():
         client_id=client_id, client_secret=client_secret
     )
     return spotipy.Spotify(auth_manager=auth_manager)
-
-
-def get_cached_playlist(playlist_id):
-    """Get cached playlist data from Redis"""
-    try:
-        cache_key = f"{SPOTIFY_CACHE_PREFIX}playlist:{playlist_id}"
-        cached_data = redis_client.get(cache_key)
-        if cached_data:
-            redis_client.expire(cache_key, SPOTIFY_CACHE_TTL)
-            return json.loads(cached_data)
-        return None
-    except Exception as e:
-        app.logger.debug(f"Cache error: {e}")
-        return None
-
-
-def cache_playlist(playlist_id, data):
-    """Cache playlist data in Redis"""
-    try:
-        cache_key = f"{SPOTIFY_CACHE_PREFIX}playlist:{playlist_id}"
-        redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, json.dumps(data))
-    except Exception as e:
-        app.logger.debug(f"Cache write error: {e}")
 
 
 def fetch_spotify_playlist(spotify_client, playlist_id):
@@ -169,6 +171,42 @@ def fetch_spotify_playlist(spotify_client, playlist_id):
             track_names.append(f"{track['track']['name']} - {artists}")
 
     return playlist_name, playlist_desc, track_names
+
+
+def get_cached_playlist(playlist_id):
+    """Get cached playlist data from Redis"""
+    try:
+        cache_key = f"{SPOTIFY_CACHE_PREFIX}playlist:{playlist_id}"
+        cached_data = redis_client.get(cache_key)
+        if cached_data:
+            redis_client.expire(cache_key, SPOTIFY_CACHE_TTL)
+            return json.loads(cached_data)
+        return None
+    except Exception as e:
+        app.logger.debug(f"Cache error: {e}")
+        return None
+
+
+def cache_playlist(playlist_id, data):
+    """Cache playlist data in Redis"""
+    try:
+        cache_key = f"{SPOTIFY_CACHE_PREFIX}playlist:{playlist_id}"
+        redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, json.dumps(data))
+    except Exception as e:
+        app.logger.debug(f"Cache write error: {e}")
+
+
+def get_ytclient_config():
+    """Get Google OAuth client configuration"""
+    return {
+        "web": {
+            "client_id": os.environ.get("GOOGLE_CLIENT_ID", ""),
+            "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": os.environ.get("REDIRECT_URI"),
+        }
+    }
 
 
 def search_youtube_music(youtube, query):
@@ -288,41 +326,12 @@ def add_to_youtube_playlist(youtube, playlist_id, video_id, max_retries=3):
     return False
 
 
-def validate_playlist_url(url):
-    if not isinstance(url, str):
-        return "Playlist URL must be a string"
-
-    url = url.strip()
-    if not url:
-        return "Playlist URL is required"
-
-    if len(url) > 500:
-        return "Playlist URL is too long"
-
-    if not SPOTIFY_PLAYLIST_REGEX.match(url):
-        return "Invalid Spotify playlist URL"
-
-    return None
-
-
-def validate_track_input(track_name, playlist_id):
-    if not isinstance(track_name, str) or not track_name.strip():
-        return "Invalid track name"
-
-    if len(track_name) > 300:
-        return "Track name too long"
-
-    if not isinstance(playlist_id, str) or not playlist_id.strip():
-        return "Invalid playlist ID"
-
-    if len(playlist_id) > 100:
-        return "Invalid playlist ID"
-
-    return None
-
-
-def internal_error(message="Internal server error"):
-    return jsonify({"error": message}), 500
+@app.errorhandler(429)
+def rate_limit_exceeded(e):
+    return (
+        jsonify({"error": "Too many requests. Please slow down and try again later."}),
+        429,
+    )
 
 
 @app.errorhandler(Exception)
@@ -404,14 +413,6 @@ def oauth2callback():
     }
 
     return redirect(url_for("index"))
-
-
-@app.errorhandler(429)
-def rate_limit_exceeded(e):
-    return (
-        jsonify({"error": "Too many requests. Please slow down and try again later."}),
-        429,
-    )
 
 
 @app.route("/disconnect")
