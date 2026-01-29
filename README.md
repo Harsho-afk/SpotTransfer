@@ -1,10 +1,6 @@
 # SpotTransfer - Spotify to YouTube Music Playlist Transfer
 
-A Flask web application that transfers your Spotify playlists to YouTube Music with real-time progress tracking and intelligent caching.
-
-## Description
-
-SpotTransfer provides a user-friendly web interface to transfer your Spotify playlists to YouTube Music. The application features OAuth authentication, Redis caching for improved performance, and real-time progress updates during transfer.
+A Flask web application that transfers your Spotify playlists to YouTube Music.
 
 ## Features
 
@@ -162,3 +158,4 @@ This project is open source and available under the MIT License.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
