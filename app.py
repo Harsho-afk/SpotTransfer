@@ -23,6 +23,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from flask_wtf.csrf import CSRFProtect
 from datetime import timedelta
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 load_dotenv()
 if os.environ.get("FLASK_DEVELOPMENT") == "TRUE":
@@ -85,6 +87,13 @@ app.config.update(
 csrf = CSRFProtect(app)
 app.config["SESSION_REDIS"] = redis_session_client
 Session(app)
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    app=app,
+    storage_uri=os.environ.get("REDIS_URL"),
+    default_limits=["200 per day", "50 per hour"],
+)
 
 
 def get_ytclient_config():
@@ -397,7 +406,16 @@ def oauth2callback():
     return redirect(url_for("index"))
 
 
+@app.errorhandler(429)
+def rate_limit_exceeded(e):
+    return (
+        jsonify({"error": "Too many requests. Please slow down and try again later."}),
+        429,
+    )
+
+
 @app.route("/disconnect")
+@limiter.limit("10 per minute")
 def disconnect():
     """Disconnect YouTube account"""
     session.clear()
@@ -405,6 +423,7 @@ def disconnect():
 
 
 @app.route("/transfer", methods=["POST"])
+@limiter.limit("5 per hour")
 def transfer():
     if "credentials" not in session:
         return jsonify({"error": "Not authenticated"}), 401
@@ -485,6 +504,7 @@ def transfer():
 
 
 @app.route("/transfer_track", methods=["POST"])
+@limiter.limit("30 per minute")
 def transfer_track():
     if "credentials" not in session:
         return jsonify({"error": "Not authenticated"}), 401
