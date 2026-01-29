@@ -22,22 +22,12 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from flask_wtf.csrf import CSRFProtect
+from datetime import timedelta
 
 load_dotenv()
 if os.environ.get("FLASK_DEVELOPMENT") == "TRUE":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-app = Flask(__name__)
-
-# Session configuration
-app.config.update(
-    SECRET_KEY=os.environ.get("FLASK_SECRET_KEY"),
-    SESSION_TYPE="redis",
-    SESSION_PERMANENT=False,
-    SESSION_USE_SIGNER=True,
-    SESSION_KEY_PREFIX="spottransfer:session:",
-)
-csrf = CSRFProtect(app)
 
 SPOTIFY_CACHE_PREFIX = "spottransfer:spotify:"
 SPOTIFY_CACHE_TTL = 3600  # 1 hour
@@ -45,6 +35,25 @@ SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 SPOTIFY_PLAYLIST_REGEX = re.compile(
     r"^https://open\.spotify\.com/playlist/[A-Za-z0-9]+(\?.*)?$"
 )
+
+
+def is_quota_exceeded(error: HttpError) -> bool:
+    """Detect YouTube Data API quota errors"""
+    try:
+        if error.resp.status != 403:
+            return False
+
+        error_content = json.loads(error.content.decode("utf-8"))
+        reasons = [
+            err.get("reason", "")
+            for err in error_content.get("error", {}).get("errors", [])
+        ]
+
+        return any(
+            reason in ("quotaExceeded", "dailyLimitExceeded") for reason in reasons
+        )
+    except Exception:
+        return False
 
 
 def create_redis_client(decode_responses=True):
@@ -58,13 +67,22 @@ def create_redis_client(decode_responses=True):
     )
 
 
-# Client for session storage (binary data)
-redis_session_client = create_redis_client(decode_responses=False)
+redis_session_client = create_redis_client(decode_responses=False)  # binary data
+redis_client = create_redis_client(decode_responses=True)  # string data
+app = Flask(__name__)
 
-# Client for general use (string data)
-redis_client = create_redis_client(decode_responses=True)
-
-# Configure session with Redis
+# Session configuration
+app.config.update(
+    SECRET_KEY=os.environ.get("FLASK_SECRET_KEY"),
+    SESSION_TYPE="redis",
+    SESSION_REDIS=redis_session_client,
+    SESSION_USE_SIGNER=True,
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=not app.debug,
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=6),
+)
+csrf = CSRFProtect(app)
 app.config["SESSION_REDIS"] = redis_session_client
 Session(app)
 
@@ -106,7 +124,7 @@ def get_cached_playlist(playlist_id):
             return json.loads(cached_data)
         return None
     except Exception as e:
-        print(f"DEBUG: Cache error: {e}")
+        app.logger.debug(f"Cache error: {e}")
         return None
 
 
@@ -116,7 +134,7 @@ def cache_playlist(playlist_id, data):
         cache_key = f"{SPOTIFY_CACHE_PREFIX}playlist:{playlist_id}"
         redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, json.dumps(data))
     except Exception as e:
-        print(f"DEBUG: Cache write error: {e}")
+        app.logger.debug(f"Cache write error: {e}")
 
 
 def fetch_spotify_playlist(spotify_client, playlist_id):
@@ -140,8 +158,6 @@ def fetch_spotify_playlist(spotify_client, playlist_id):
         if track["track"] and track["track"]["name"]:
             artists = ", ".join(artist["name"] for artist in track["track"]["artists"])
             track_names.append(f"{track['track']['name']} - {artists}")
-
-    print(track_names)
 
     return playlist_name, playlist_desc, track_names
 
@@ -170,16 +186,15 @@ def search_youtube_music(youtube, query):
         if search_response.get("items"):
             video_id = search_response["items"][0]["id"]["videoId"]
             redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, video_id)
-            print(f"DEBUG: Cached search result for: {query}")
             return video_id
 
         return None
 
-    except Exception as e:
-        error_msg = str(e)
-        if "quota" in error_msg.lower():
+    except HttpError as e:
+        if is_quota_exceeded(e):
             raise Exception("QUOTA_EXCEEDED")
-        print(f"DEBUG: YouTube search error: {e}")
+
+        app.logger.debug("YouTube search failed", exc_info=True)
         return None
 
 
@@ -202,7 +217,7 @@ def create_youtube_playlist(youtube, title, description):
         )
         return playlist["id"]
     except Exception as e:
-        print(f"DEBUG: Error creating YouTube playlist: {e}")
+        app.logger.debug(f"Error creating YouTube playlist: {e}")
         return None
 
 
@@ -238,7 +253,7 @@ def add_to_youtube_playlist(youtube, playlist_id, video_id, max_retries=3):
                 else:
                     return False
 
-            elif status_code == 403 and "quota" in error_details.lower():
+            elif is_quota_exceeded(e):
                 raise Exception("QUOTA_EXCEEDED")
 
             elif status_code >= 500:
@@ -249,13 +264,13 @@ def add_to_youtube_playlist(youtube, playlist_id, video_id, max_retries=3):
                 else:
                     return False
             else:
-                print(
-                    f"DEBUG: Error adding video to playlist (status {status_code}): {e}"
+                app.logger.debug(
+                    f"Error adding video to playlist (status {status_code}): {e}"
                 )
                 return False
 
         except Exception as e:
-            print(f"DEBUG: Unexpected error adding video to playlist: {e}")
+            app.logger.debug(f"Unexpected error adding video to playlist: {e}")
             if attempt < max_retries - 1:
                 time.sleep(2)
                 continue
@@ -295,6 +310,10 @@ def validate_track_input(track_name, playlist_id):
         return "Invalid playlist ID"
 
     return None
+
+
+def internal_error(message="Internal server error"):
+    return jsonify({"error": message}), 500
 
 
 @app.errorhandler(Exception)
@@ -356,9 +375,16 @@ def oauth2callback():
         redirect_uri=url_for("oauth2callback", _external=True),
     )
 
-    flow.fetch_token(authorization_response=request.url)
+    try:
+        flow.fetch_token(authorization_response=request.url)
+    except Exception:
+        app.logger.exception("OAuth token exchange failed")
+        return redirect(url_for("index"))
 
     credentials = flow.credentials
+
+    session.clear()
+    session.permanent = True
     session["credentials"] = {
         "token": credentials.token,
         "refresh_token": credentials.refresh_token,
@@ -368,21 +394,18 @@ def oauth2callback():
         "scopes": credentials.scopes,
     }
 
-    session.pop("oauth_state", None)
     return redirect(url_for("index"))
 
 
 @app.route("/disconnect")
 def disconnect():
     """Disconnect YouTube account"""
-    session.pop("credentials", None)
-    session.pop("state", None)
+    session.clear()
     return redirect(url_for("index"))
 
 
 @app.route("/transfer", methods=["POST"])
 def transfer():
-    """Transfer playlist from Spotify to YouTube"""
     if "credentials" not in session:
         return jsonify({"error": "Not authenticated"}), 401
 
@@ -405,7 +428,7 @@ def transfer():
 
     spotify_client = get_spotify_client()
     if not spotify_client:
-        return jsonify({"error": "Spotify credentials not configured"}), 500
+        return internal_error("Spotify not configured")
 
     try:
         cached_data = get_cached_playlist(playlist_id)
@@ -431,13 +454,21 @@ def transfer():
                 },
             )
 
-        credentials = Credentials(**session["credentials"])
-        youtube = build("youtube", "v3", credentials=credentials)
+        creds_data = session.get("credentials")
+        if not isinstance(creds_data, dict):
+            session.clear()
+            return jsonify({"error": "Session expired"}), 401
+
+        youtube = build("youtube", "v3", credentials=Credentials(**creds_data))
+
         yt_playlist_id = create_youtube_playlist(
-            youtube, playlist_name, f"Transferred from Spotify\n\n{playlist_desc}"
+            youtube,
+            playlist_name,
+            f"Transferred from Spotify\n\n{playlist_desc}",
         )
+
         if not yt_playlist_id:
-            return jsonify({"error": "Failed to create YouTube playlist"}), 500
+            return internal_error("Failed to create playlist")
 
         return jsonify(
             {
@@ -448,14 +479,13 @@ def transfer():
             }
         )
 
-    except Exception as e:
-        print(f"DEBUG: Transfer error: {e}")
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        app.logger.exception("Playlist transfer failed")
+        return internal_error()
 
 
 @app.route("/transfer_track", methods=["POST"])
 def transfer_track():
-    """Transfer a single track to YouTube playlist"""
     if "credentials" not in session:
         return jsonify({"error": "Not authenticated"}), 401
 
@@ -474,8 +504,12 @@ def transfer_track():
         return jsonify({"error": error}), 400
 
     try:
-        credentials = Credentials(**session["credentials"])
-        youtube = build("youtube", "v3", credentials=credentials)
+        creds_data = session.get("credentials")
+        if not isinstance(creds_data, dict):
+            session.clear()
+            return jsonify({"error": "Session expired"}), 401
+
+        youtube = build("youtube", "v3", credentials=Credentials(**creds_data))
 
         try:
             video_id = search_youtube_music(youtube, track_name)
@@ -492,21 +526,21 @@ def transfer_track():
 
         if video_id:
             success = add_to_youtube_playlist(youtube, playlist_id, video_id)
-            return jsonify({"success": success, "found": True, "video_id": video_id})
+            return jsonify({"success": success, "found": True})
         else:
             return jsonify({"success": False, "found": False})
 
-    except Exception as e:
-        print(f"DEBUG: Transfer track error: {e}")
-        return jsonify({"error": str(e)}), 500
+    except Exception:
+        app.logger.exception("Track transfer failed")
+        return internal_error()
 
 
 if __name__ == "__main__":
     try:
         redis_client.ping()
-        print("✓ Redis connection successful")
-    except Exception as e:
-        print(f"✗ Redis connection failed: {e}")
-        print("Please ensure Redis is running: redis-server")
+        app.logger.info("Redis connection successful")
+    except Exception:
+        app.logger.warning("✗ Redis connection failed")
+        app.logger.warning("Please ensure Redis is running: redis-server")
 
     app.run(debug=False, port=5000)

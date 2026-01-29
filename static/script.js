@@ -66,6 +66,11 @@ async function transferTracks(tracks, playlistId, totalTracks) {
     const notFoundList = [];
 
     for (let i = 0; i < tracks.length; i++) {
+        if (result.error === 'Session expired') {
+            showError('Session expired. Please sign in again.');
+            window.location.reload();
+            return;
+        }
         const track = tracks[i];
         updateStatus(`Searching: ${track}`);
         const result = await transferSingleTrack(track, playlistId);
@@ -113,7 +118,17 @@ async function transferSingleTrack(trackName, playlistId) {
             }),
         });
 
-        const data = await response.json();
+        let data;
+        try {
+            data = await response.json();
+        } catch {
+            throw new Error('Invalid server response');
+        }
+
+        if (!response.ok) {
+            throw new Error(data.error || 'Track transfer failed');
+        }
+
         return data;
     } catch (err) {
         console.error('transferSingleTrack error:', err);
@@ -136,8 +151,12 @@ function disableProgressContainer() {
 }
 
 function updateStatus(message, showSpinner = true) {
-    const spinner = showSpinner ? '<span class="spinner"></span> ' : '';
-    document.getElementById('currentTrack').innerHTML = spinner + message;
+    const el = document.getElementById('currentTrack');
+    if (showSpinner) {
+        el.innerHTML = `<span class="spinner"></span> ${escapeHtml(message)}`;
+    } else {
+        el.textContent = message;
+    }
 }
 
 function updateStats(added, notFound) {
