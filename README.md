@@ -55,11 +55,26 @@ GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
 REDIRECT_URI=http://localhost:5000/oauth2callback
 FLASK_SECRET_KEY=your_random_secret_key
+FLASK_DEVELOPMENT=FALSE
 REDIS_HOST=localhost
 REDIS_PORT=6379
 REDIS_DB=0
 REDIS_PASSWORD=
 ```
+
+### Environment Variables Explained
+
+- `SPOTIFY_CLIENT_ID`: Your Spotify application client ID
+- `SPOTIFY_CLIENT_SECRET`: Your Spotify application client secret
+- `GOOGLE_CLIENT_ID`: Your Google OAuth 2.0 client ID
+- `GOOGLE_CLIENT_SECRET`: Your Google OAuth 2.0 client secret
+- `REDIRECT_URI`: OAuth callback URL (must match Google Cloud Console configuration)
+- `FLASK_SECRET_KEY`: Random secret key for Flask sessions (generate a strong random string)
+- `FLASK_DEVELOPMENT`: Set to TRUE for local development, FALSE for production
+- `REDIS_HOST`: Redis server hostname
+- `REDIS_PORT`: Redis server port
+- `REDIS_DB`: Redis database number
+- `REDIS_PASSWORD`: Redis password (leave empty if not configured)
 
 ## Setting Up API Access
 
@@ -111,31 +126,6 @@ Note: The YouTube Data API has daily quota limits. The application will notify y
    - Add found tracks to the playlist
    - Display a list of tracks that could not be found
 
-## Troubleshooting
-
-### Redis Connection Issues
-
-If you see "Redis connection failed":
-- Ensure Redis is installed and running
-- Check Redis connection settings in `.env`
-- Verify Redis is accessible on the specified host and port
-
-### YouTube API Quota Exceeded
-
-The YouTube Data API has a daily quota limit. If exceeded:
-- The application will stop the transfer and notify you
-- Already transferred tracks will remain in the playlist
-- Quota resets at midnight Pacific Time
-- You can continue the transfer the next day
-
-### Authentication Issues
-
-If OAuth authentication fails:
-- Clear your browser cookies
-- Verify your Google OAuth credentials in `.env`
-- Check that the redirect URI matches exactly in both Google Cloud Console and `.env`
-- Ensure the OAuth popup is not blocked by your browser
-
 ## Project Structure
 
 ```
@@ -158,4 +148,3 @@ This project is open source and available under the MIT License.
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
