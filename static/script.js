@@ -1,77 +1,6 @@
 const AppState = {
-    authInProgress: false,
-    authPopup: null,
     transferInProgress: false,
 };
-
-function handleAuthorize() {
-    if (AppState.authInProgress) {
-        console.log('Authorization already in progress');
-        if (AppState.authPopup && !AppState.authPopup.closed) {
-            AppState.authPopup.focus();
-        }
-        return;
-    }
-
-    AppState.authInProgress = true;
-    openAuthPopup();
-    setupAuthListener();
-}
-
-function openAuthPopup() {
-    const width = 600;
-    const height = 700;
-    const left = (screen.width - width) / 2;
-    const top = (screen.height - height) / 2;
-
-    AppState.authPopup = window.open(
-        '/authorize',
-        'oauth_popup',
-        `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
-    );
-
-    const checkPopup = setInterval(() => {
-        if (AppState.authPopup.closed) {
-            clearInterval(checkPopup);
-            AppState.authInProgress = false;
-        }
-    }, 500);
-}
-
-function setupAuthListener() {
-    const messageHandler = async (event) => {
-        if (event.data && event.data.type === 'auth_complete') {
-            console.log('Auth complete message received');
-            window.removeEventListener('message', messageHandler);
-
-            try {
-                await completeAuthentication(event.data.state);
-                console.log('Authentication successful, reloading page');
-                location.reload();
-            } catch (error) {
-                console.error('Authentication failed:', error);
-                showError('Authentication failed. Please try again.');
-                AppState.authInProgress = false;
-            }
-        }
-    };
-
-    window.addEventListener('message', messageHandler);
-}
-
-async function completeAuthentication(state) {
-    const response = await fetch('/complete_auth', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state }),
-    });
-
-    const data = await response.json();
-
-    if (!data.success) {
-        throw new Error(data.error || 'Authentication failed');
-    }
-}
 
 function handleDisconnect() {
     window.location.href = '/disconnect';
@@ -107,7 +36,10 @@ async function handleStartTransfer() {
 async function transferPlaylist(playlistUrl) {
     const response = await fetch('/transfer', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': csrfToken,
+        },
         body: JSON.stringify({ playlist_url: playlistUrl }),
     });
 
@@ -166,7 +98,10 @@ async function transferSingleTrack(trackName, playlistId) {
     try {
         const response = await fetch('/transfer_track', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': csrfToken,
+            },
             body: JSON.stringify({
                 track_name: trackName,
                 playlist_id: playlistId,

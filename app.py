@@ -21,9 +21,12 @@ from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+from flask_wtf.csrf import CSRFProtect
 
 load_dotenv()
-os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+if os.environ.get("FLASK_DEVELOPMENT") == "TRUE":
+    os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+
 app = Flask(__name__)
 
 # Session configuration
@@ -34,15 +37,12 @@ app.config.update(
     SESSION_USE_SIGNER=True,
     SESSION_KEY_PREFIX="spottransfer:session:",
 )
+csrf = CSRFProtect(app)
 
 # Redis key prefixes
-OAUTH_STATE_PREFIX = "spottransfer:oauth_state:"
-OAUTH_CREDS_PREFIX = "spottransfer:oauth_creds:"
 SPOTIFY_CACHE_PREFIX = "spottransfer:spotify:"
 
 # TTL settings (in seconds)
-OAUTH_STATE_TTL = 600  # 10 minutes
-OAUTH_CREDS_TTL = 300  # 5 minutes
 SPOTIFY_CACHE_TTL = 3600  # 1 hour
 
 # Google OAuth scopes
@@ -79,9 +79,7 @@ def get_ytclient_config():
             "client_secret": os.environ.get("GOOGLE_CLIENT_SECRET", ""),
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "redirect_uris": [
-                os.environ.get("REDIRECT_URI", "http://localhost:5000/oauth2callback")
-            ],
+            "redirect_uris": os.environ.get("REDIRECT_URI"),
         }
     }
 
@@ -274,20 +272,6 @@ def add_to_youtube_playlist(youtube, playlist_id, video_id, max_retries=3):
     return False
 
 
-def cleanup_old_oauth_states(session_id):
-    """Remove any existing OAuth states for a session"""
-    try:
-        pattern = f"{OAUTH_STATE_PREFIX}*"
-        for key in redis_client.scan_iter(match=pattern):
-            stored_session_id = redis_client.get(key)
-            if stored_session_id == session_id:
-                old_state = key.replace(OAUTH_STATE_PREFIX, "")
-                redis_client.delete(key)
-                redis_client.delete(f"{OAUTH_CREDS_PREFIX}{old_state}")
-    except Exception as e:
-        print(f"DEBUG: Error cleaning up old states: {e}")
-
-
 @app.errorhandler(Exception)
 def handle_redis_decode_error(e):
     """Handle Redis decode errors by clearing the session"""
@@ -317,74 +301,40 @@ def index():
 
 @app.route("/authorize")
 def authorize():
-    """Start OAuth flow"""
-    client_config = get_ytclient_config()
-    if (
-        not client_config["web"]["client_id"]
-        or not client_config["web"]["client_secret"]
-    ):
-        return "OAuth credentials not configured", 400
-
     flow = Flow.from_client_config(
-        client_config,
+        get_ytclient_config(),
         scopes=SCOPES,
-        redirect_uri=client_config["web"]["redirect_uris"][0],
+        redirect_uri=url_for("oauth2callback", _external=True),
     )
 
     authorization_url, state = flow.authorization_url(
-        access_type="offline", include_granted_scopes="true", prompt="consent"
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent",
     )
 
-    session["oauth_initiated"] = True
-    session_id = request.cookies.get("session")
-
-    if not session_id:
-        session_id = session.sid if hasattr(session, "sid") else str(id(session))
-
-    # Clean up old failed OAuth states for this session
-    cleanup_old_oauth_states(session_id)
-
-    state_key = f"{OAUTH_STATE_PREFIX}{state}"
-    redis_client.setex(state_key, OAUTH_STATE_TTL, session_id)
-
+    session["oauth_state"] = state
     return redirect(authorization_url)
 
 
 @app.route("/oauth2callback")
 def oauth2callback():
-    """Handle OAuth callback from Google"""
-    state_from_google = request.args.get("state")
-    state_key = f"{OAUTH_STATE_PREFIX}{state_from_google}"
-    original_session_id = redis_client.get(state_key)
+    state = request.args.get("state")
 
-    if not original_session_id:
-        return (
-            """
-        <html>
-        <body>
-            <h2>Authentication Timeout</h2>
-            <p>Your authentication session expired (10 minute limit).</p>
-            <p>Please close this window and try connecting again.</p>
-            <script>setTimeout(() => window.close(), 3000);</script>
-        </body>
-        </html>
-        """,
-            400,
-        )
+    if not state or state != session.get("oauth_state"):
+        return "Invalid OAuth state", 400
 
-    # Exchange authorization code for credentials
-    client_config = get_ytclient_config()
     flow = Flow.from_client_config(
-        client_config,
+        get_ytclient_config(),
         scopes=SCOPES,
-        state=state_from_google,
-        redirect_uri=client_config["web"]["redirect_uris"][0],
+        state=state,
+        redirect_uri=url_for("oauth2callback", _external=True),
     )
 
     flow.fetch_token(authorization_response=request.url)
 
     credentials = flow.credentials
-    credentials_dict = {
+    session["credentials"] = {
         "token": credentials.token,
         "refresh_token": credentials.refresh_token,
         "token_uri": credentials.token_uri,
@@ -393,55 +343,8 @@ def oauth2callback():
         "scopes": credentials.scopes,
     }
 
-    # Store credentials temporarily in Redis
-    creds_key = f"{OAUTH_CREDS_PREFIX}{state_from_google}"
-    redis_client.setex(creds_key, OAUTH_CREDS_TTL, json.dumps(credentials_dict))
-
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Authentication Successful</title>
-    </head>
-    <body>
-        <script>
-            if (window.opener) {{
-                window.opener.postMessage({{type: 'auth_complete', state: '{state_from_google}'}}, '*');
-            }}
-            window.close();
-            setTimeout(() => window.location.href = '/', 100);
-        </script>
-        <p>Authentication successful! You can close this window.</p>
-    </body>
-    </html>
-    """
-
-
-@app.route("/complete_auth", methods=["POST"])
-def complete_auth():
-    """Complete authentication by storing credentials in user's session"""
-    data = request.json
-    state = data.get("state")
-
-    print(f"DEBUG: complete_auth called with state: {state}")
-
-    if not state:
-        return jsonify({"error": "No state provided"}), 400
-
-    # Retrieve credentials from Redis
-    creds_key = f"{OAUTH_CREDS_PREFIX}{state}"
-    credentials_json = redis_client.get(creds_key)
-
-    if not credentials_json:
-        return jsonify({"error": "Credentials expired. Please try again."}), 400
-
-    session["credentials"] = json.loads(credentials_json)
-
-    state_key = f"{OAUTH_STATE_PREFIX}{state}"
-    redis_client.delete(creds_key)
-    redis_client.delete(state_key)
-
-    return jsonify({"success": True})
+    session.pop("oauth_state", None)
+    return redirect(url_for("index"))
 
 
 @app.route("/disconnect")
@@ -565,4 +468,4 @@ if __name__ == "__main__":
         print(f"✗ Redis connection failed: {e}")
         print("Please ensure Redis is running: redis-server")
 
-    app.run(debug=True, port=5000)
+    app.run(debug=False, port=5000)
