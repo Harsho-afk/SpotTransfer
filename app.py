@@ -22,6 +22,7 @@ from datetime import timedelta
 from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
+from spotipy.exceptions import SpotifyException
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -153,16 +154,33 @@ def get_spotify_client():
 
 def fetch_spotify_playlist(spotify_client, playlist_id):
     """Fetch playlist data from Spotify API"""
-    playlist_info = spotify_client.playlist(playlist_id)
+    try:
+        playlist_info = spotify_client.playlist(playlist_id)
+    except SpotifyException as e:
+        if e.http_status == 404:
+            raise ValueError("Spotify playlist not found. Please check the URL.")
+        elif e.http_status == 401:
+            raise ValueError(
+                "Spotify authentication failed. Please check API credentials."
+            )
+        elif e.http_status == 403:
+            raise ValueError("Access to this Spotify playlist is forbidden.")
+        else:
+            raise ValueError(f"Spotify API error: {str(e)}")
+
     playlist_name = playlist_info["name"]
     playlist_desc = playlist_info.get("description", "")
     tracks = []
-    results = spotify_client.playlist_tracks(playlist_id)
-    tracks.extend(results["items"])
 
-    while results["next"]:
-        results = spotify_client.next(results)
+    try:
+        results = spotify_client.playlist_tracks(playlist_id)
         tracks.extend(results["items"])
+
+        while results["next"]:
+            results = spotify_client.next(results)
+            tracks.extend(results["items"])
+    except SpotifyException as e:
+        raise ValueError(f"Failed to fetch playlist tracks: {str(e)}")
 
     if not tracks:
         return None, None, []
@@ -185,8 +203,14 @@ def get_cached_playlist(playlist_id):
             redis_client.expire(cache_key, SPOTIFY_CACHE_TTL)
             return json.loads(cached_data)
         return None
+    except redis.RedisError as e:
+        app.logger.debug(f"Redis cache read error: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        app.logger.debug(f"Cache data decode error: {e}")
+        return None
     except Exception as e:
-        app.logger.debug(f"Cache error: {e}")
+        app.logger.debug(f"Unexpected cache error: {e}")
         return None
 
 
@@ -195,8 +219,10 @@ def cache_playlist(playlist_id, data):
     try:
         cache_key = f"{SPOTIFY_CACHE_PREFIX}playlist:{playlist_id}"
         redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, json.dumps(data))
+    except redis.RedisError as e:
+        app.logger.debug(f"Redis cache write error: {e}")
     except Exception as e:
-        app.logger.debug(f"Cache write error: {e}")
+        app.logger.debug(f"Unexpected cache write error: {e}")
 
 
 def get_ytclient_config():
@@ -235,7 +261,10 @@ def search_youtube_music(youtube, query):
 
         if search_response.get("items"):
             video_id = search_response["items"][0]["id"]["videoId"]
-            redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, video_id)
+            try:
+                redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, video_id)
+            except redis.RedisError as e:
+                app.logger.debug(f"Failed to cache search result: {e}")
             return video_id
 
         return None
@@ -243,12 +272,15 @@ def search_youtube_music(youtube, query):
     except HttpError as e:
         if is_quota_exceeded(e):
             raise Exception("QUOTA_EXCEEDED")
-
         app.logger.debug("YouTube search failed", exc_info=True)
+        return None
+    except Exception as e:
+        app.logger.debug(f"Unexpected error in YouTube search: {e}")
         return None
 
 
 def create_youtube_playlist(youtube, title, description):
+    """Create a new YouTube playlist"""
     try:
         playlist = (
             youtube.playlists()
@@ -270,7 +302,10 @@ def create_youtube_playlist(youtube, title, description):
         if is_quota_exceeded(e):
             raise Exception("QUOTA_EXCEEDED")
         app.logger.exception("Error creating YouTube playlist")
-        return None
+        raise Exception(f"YouTube API error: {e.resp.status}")
+    except Exception as e:
+        app.logger.exception(f"Unexpected error creating YouTube playlist: {e}")
+        raise
 
 
 def add_to_youtube_playlist(youtube, playlist_id, video_id, max_retries=3):
@@ -368,56 +403,69 @@ def index():
 
 @app.route("/authorize")
 def authorize():
-    flow = Flow.from_client_config(
-        get_ytclient_config(),
-        scopes=SCOPES,
-        redirect_uri=url_for("oauth2callback", _external=True),
-    )
+    """Start OAuth flow for YouTube authentication"""
+    try:
+        flow = Flow.from_client_config(
+            get_ytclient_config(),
+            scopes=SCOPES,
+            redirect_uri=url_for("oauth2callback", _external=True),
+        )
 
-    authorization_url, state = flow.authorization_url(
-        access_type="offline",
-        include_granted_scopes="true",
-        prompt="consent",
-    )
+        authorization_url, state = flow.authorization_url(
+            access_type="offline",
+            include_granted_scopes="true",
+            prompt="consent",
+        )
 
-    session["oauth_state"] = state
-    return redirect(authorization_url)
+        session["oauth_state"] = state
+        return redirect(authorization_url)
+    except Exception as e:
+        app.logger.exception(f"Error starting OAuth flow: {e}")
+        return (
+            jsonify(
+                {
+                    "error": "Failed to start authentication. Please check your Google API credentials."
+                }
+            ),
+            500,
+        )
 
 
 @app.route("/oauth2callback")
 def oauth2callback():
+    """Handle OAuth callback from Google"""
     state = request.args.get("state")
 
     if not state or state != session.get("oauth_state"):
-        return "Invalid OAuth state", 400
-
-    flow = Flow.from_client_config(
-        get_ytclient_config(),
-        scopes=SCOPES,
-        state=state,
-        redirect_uri=url_for("oauth2callback", _external=True),
-    )
-
+        return "Invalid OAuth state. Please try authenticating again.", 400
     try:
+        flow = Flow.from_client_config(
+            get_ytclient_config(),
+            scopes=SCOPES,
+            state=state,
+            redirect_uri=url_for("oauth2callback", _external=True),
+        )
+
         flow.fetch_token(authorization_response=request.url)
-    except Exception:
-        app.logger.exception("OAuth token exchange failed")
+        credentials = flow.credentials
+
+        session.clear()
+        session.permanent = True
+        session["credentials"] = {
+            "token": credentials.token,
+            "refresh_token": credentials.refresh_token,
+            "token_uri": credentials.token_uri,
+            "client_id": credentials.client_id,
+            "client_secret": credentials.client_secret,
+            "scopes": credentials.scopes,
+        }
+
         return redirect(url_for("index"))
 
-    credentials = flow.credentials
-
-    session.clear()
-    session.permanent = True
-    session["credentials"] = {
-        "token": credentials.token,
-        "refresh_token": credentials.refresh_token,
-        "token_uri": credentials.token_uri,
-        "client_id": credentials.client_id,
-        "client_secret": credentials.client_secret,
-        "scopes": credentials.scopes,
-    }
-
-    return redirect(url_for("index"))
+    except Exception as e:
+        app.logger.exception(f"OAuth token exchange failed: {e}")
+        session.clear()
+        return "Authentication failed. Please try again.", 500
 
 
 @app.route("/disconnect")
@@ -431,8 +479,14 @@ def disconnect():
 @app.route("/transfer", methods=["POST"])
 @limiter.limit("5 per hour")
 def transfer():
+    """Transfer a Spotify playlist to YouTube Music"""
     if "credentials" not in session:
-        return jsonify({"error": "Not authenticated"}), 401
+        return (
+            jsonify(
+                {"error": "Not authenticated. Please connect your YouTube account."}
+            ),
+            401,
+        )
 
     if not request.is_json:
         return jsonify({"error": "Invalid request format"}), 400
@@ -449,13 +503,14 @@ def transfer():
     match = re.search(r"playlist/([a-zA-Z0-9]+)", playlist_url)
     playlist_id = match.group(1) if match else None
     if not playlist_id:
-        return jsonify({"error": "Invalid Spotify URL"}), 400
+        return jsonify({"error": "Invalid Spotify playlist URL format"}), 400
 
     spotify_client = get_spotify_client()
     if not spotify_client:
-        return internal_error("Spotify not configured")
+        return internal_error("Spotify API credentials not configured properly")
 
     try:
+        # Try to get cached playlist data first
         cached_data = get_cached_playlist(playlist_id)
 
         if cached_data:
@@ -463,13 +518,32 @@ def transfer():
             playlist_desc = cached_data["description"]
             track_names = cached_data["tracks"]
         else:
-            playlist_name, playlist_desc, track_names = fetch_spotify_playlist(
-                spotify_client, playlist_id
-            )
+            # Fetch from Spotify API
+            try:
+                playlist_name, playlist_desc, track_names = fetch_spotify_playlist(
+                    spotify_client, playlist_id
+                )
+            except ValueError as e:
+                # User-facing Spotify errors
+                return jsonify({"error": str(e)}), 400
+            except SpotifyException as e:
+                app.logger.exception(f"Spotify API error: {e}")
+                return (
+                    jsonify(
+                        {
+                            "error": "Failed to fetch playlist from Spotify. Please try again."
+                        }
+                    ),
+                    500,
+                )
 
             if not track_names:
-                return jsonify({"error": "Playlist is empty"}), 400
+                return (
+                    jsonify({"error": "Playlist is empty or has no accessible tracks"}),
+                    400,
+                )
 
+            # Cache the playlist data
             cache_playlist(
                 playlist_id,
                 {
@@ -479,21 +553,56 @@ def transfer():
                 },
             )
 
+        # Validate credentials
         creds_data = session.get("credentials")
         if not isinstance(creds_data, dict):
             session.clear()
-            return jsonify({"error": "Session expired"}), 401
+            return (
+                jsonify(
+                    {"error": "Session expired. Please reconnect your YouTube account."}
+                ),
+                401,
+            )
 
-        youtube = build("youtube", "v3", credentials=Credentials(**creds_data))
+        # Build YouTube client
+        try:
+            youtube = build("youtube", "v3", credentials=Credentials(**creds_data))
+        except Exception as e:
+            app.logger.exception(f"Failed to build YouTube client: {e}")
+            session.clear()
+            return (
+                jsonify(
+                    {
+                        "error": "Failed to authenticate with YouTube. Please reconnect your account."
+                    }
+                ),
+                401,
+            )
 
-        yt_playlist_id = create_youtube_playlist(
-            youtube,
-            playlist_name,
-            f"Transferred from Spotify\n\n{playlist_desc}",
-        )
+        # Create YouTube playlist
+        try:
+            yt_playlist_id = create_youtube_playlist(
+                youtube,
+                playlist_name,
+                f"Transferred from Spotify\n\n{playlist_desc}",
+            )
+        except Exception as e:
+            if "QUOTA_EXCEEDED" in str(e):
+                return (
+                    jsonify(
+                        {
+                            "error": "YouTube API quota exceeded. The quota resets daily at midnight Pacific Time. Please try again later."
+                        }
+                    ),
+                    429,
+                )
+            app.logger.exception("Failed to create YouTube playlist")
+            return internal_error(
+                "Failed to create YouTube playlist. Please try again."
+            )
 
         if not yt_playlist_id:
-            return internal_error("Failed to create playlist")
+            return internal_error("Failed to create YouTube playlist")
 
         return jsonify(
             {
@@ -504,16 +613,39 @@ def transfer():
             }
         )
 
-    except Exception:
-        app.logger.exception("Playlist transfer failed")
-        return internal_error()
+    except HttpError as e:
+        app.logger.exception("YouTube API error during transfer")
+        if is_quota_exceeded(e):
+            return (
+                jsonify(
+                    {
+                        "error": "YouTube API quota exceeded. The quota resets daily at midnight Pacific Time. Please try again later."
+                    }
+                ),
+                429,
+            )
+        return internal_error("YouTube API error occurred. Please try again.")
+
+    except redis.RedisError as e:
+        app.logger.exception(f"Redis error during transfer: {e}")
+        return internal_error("Cache error occurred. Please try again.")
+
+    except Exception as e:
+        app.logger.exception(f"Unexpected error during playlist transfer: {e}")
+        return internal_error("An unexpected error occurred. Please try again.")
 
 
 @app.route("/transfer_track", methods=["POST"])
 @limiter.limit("30 per minute")
 def transfer_track():
+    """Transfer a single track to YouTube Music playlist"""
     if "credentials" not in session:
-        return jsonify({"error": "Not authenticated"}), 401
+        return (
+            jsonify(
+                {"error": "Not authenticated. Please reconnect your YouTube account."}
+            ),
+            401,
+        )
 
     if not request.is_json:
         return jsonify({"error": "Invalid request format"}), 400
@@ -533,9 +665,24 @@ def transfer_track():
         creds_data = session.get("credentials")
         if not isinstance(creds_data, dict):
             session.clear()
-            return jsonify({"error": "Session expired"}), 401
+            return (
+                jsonify(
+                    {"error": "Session expired. Please reconnect your YouTube account."}
+                ),
+                401,
+            )
 
-        youtube = build("youtube", "v3", credentials=Credentials(**creds_data))
+        try:
+            youtube = build("youtube", "v3", credentials=Credentials(**creds_data))
+        except Exception as e:
+            app.logger.exception(f"Failed to build YouTube client: {e}")
+            session.clear()
+            return (
+                jsonify(
+                    {"error": "Session expired. Please reconnect your YouTube account."}
+                ),
+                401,
+            )
 
         try:
             video_id = search_youtube_music(youtube, track_name)
@@ -545,20 +692,45 @@ def transfer_track():
                     {
                         "success": False,
                         "quota_exceeded": True,
-                        "message": "YouTube API quota exceeded",
+                        "message": "YouTube API quota exceeded. The quota resets daily at midnight Pacific Time.",
                     }
                 )
             raise
 
         if video_id:
-            success = add_to_youtube_playlist(youtube, playlist_id, video_id)
-            return jsonify({"success": success, "found": True})
+            try:
+                success = add_to_youtube_playlist(youtube, playlist_id, video_id)
+                return jsonify({"success": success, "found": True})
+            except Exception as e:
+                if "QUOTA_EXCEEDED" in str(e):
+                    return jsonify(
+                        {
+                            "success": False,
+                            "quota_exceeded": True,
+                            "message": "YouTube API quota exceeded",
+                        }
+                    )
+                raise
         else:
             return jsonify({"success": False, "found": False})
 
-    except Exception:
-        app.logger.exception("Track transfer failed")
-        return internal_error()
+    except HttpError as e:
+        app.logger.exception("YouTube API error during track transfer")
+        if is_quota_exceeded(e):
+            return jsonify(
+                {
+                    "success": False,
+                    "quota_exceeded": True,
+                    "message": "YouTube API quota exceeded",
+                }
+            )
+        return jsonify({"success": False, "found": False, "error": "YouTube API error"})
+
+    except Exception as e:
+        app.logger.exception(f"Unexpected error during track transfer: {e}")
+        return jsonify(
+            {"success": False, "found": False, "error": "An unexpected error occurred"}
+        )
 
 
 if __name__ == "__main__":
