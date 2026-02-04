@@ -152,8 +152,12 @@ function enableProgressContainer() {
     document.getElementById('notFoundContainer').innerHTML = '';
     document.getElementById('addedTracks').textContent = '0';
     document.getElementById('notFoundTracks').textContent = '0';
-    document.getElementById('progressFill').style.width = '0%';
-    document.getElementById('progressFill').textContent = '0%';
+    const progressFill = document.getElementById('progressFill');
+    progressFill.style.width = '0%';
+    const progressText = progressFill.querySelector('.progress-text');
+    if (progressText) {
+        progressText.textContent = '0%';
+    }
 }
 
 function disableProgressContainer() {
@@ -163,21 +167,31 @@ function disableProgressContainer() {
 function disableTransferButton() {
     const btn = document.getElementById('transferBtn');
     btn.disabled = true;
-    btn.textContent = 'Transfer in Progress...';
+    const btnIcon = btn.querySelector('.btn-icon');
+    if (btnIcon) {
+        btn.innerHTML = '<span class="spinner"></span><span>Transfer in Progress...</span>';
+    } else {
+        btn.textContent = 'Transfer in Progress...';
+    }
 }
 
 function enableTransferButton() {
     const btn = document.getElementById('transferBtn');
     btn.disabled = false;
-    btn.textContent = 'Start Transfer';
+    btn.innerHTML = `
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Start Transfer
+    `;
 }
 
 function updateStatus(message, showSpinner = true) {
     const el = document.getElementById('currentTrack');
     if (showSpinner) {
-        el.innerHTML = `<span class="spinner"></span> ${escapeHtml(message)}`;
+        el.innerHTML = `<span class="spinner"></span><span>${escapeHtml(message)}</span>`;
     } else {
-        el.textContent = message;
+        el.innerHTML = `<span>${escapeHtml(message)}</span>`;
     }
 }
 
@@ -190,7 +204,10 @@ function updateProgress(current, total) {
     const progress = total === 0 ? 0 : (current / total) * 100;
     const fill = document.getElementById('progressFill');
     fill.style.width = `${progress}%`;
-    fill.textContent = `${Math.round(progress)}%`;
+    const progressText = fill.querySelector('.progress-text');
+    if (progressText) {
+        progressText.textContent = `${Math.round(progress)}%`;
+    }
 }
 
 function showQuotaExceeded(
@@ -219,8 +236,14 @@ function showCompletion(notFoundList) {
 
     if (notFoundList.length === 0) {
         document.getElementById('notFoundContainer').innerHTML = `
-            <div class="info-box" style="margin-top: 5px;">
-                All tracks processed successfully.
+            <div class="info-banner" style="margin-top: 1rem;">
+                <svg class="info-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <div>
+                    <strong>Success</strong>
+                    <p>All tracks were transferred successfully!</p>
+                </div>
             </div>
         `;
         return;
@@ -232,7 +255,12 @@ function showCompletion(notFoundList) {
 
     document.getElementById('notFoundContainer').innerHTML = `
         <div class="not-found-section">
-            <h3>Tracks Not Found (${notFoundList.length})</h3>
+            <h3>
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="width: 20px; height: 20px;">
+                    <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Tracks Not Found (${notFoundList.length})
+            </h3>
             <div class="not-found-list">${html}</div>
         </div>
     `;
