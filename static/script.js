@@ -219,9 +219,7 @@ function showCompletion(notFoundList) {
 
     if (notFoundList.length === 0) {
         document.getElementById('notFoundContainer').innerHTML = `
-            <div class="info-box" style="margin-top: 5px;">
-                All tracks processed successfully.
-            </div>
+            <p style="color: #4caf50; font-size: 13px; margin-top: 10px;">All tracks transferred successfully.</p>
         `;
         return;
     }

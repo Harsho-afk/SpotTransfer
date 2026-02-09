@@ -10,37 +10,25 @@
 
     <body>
         <div class="container">
-            <div class="header">
-                <h1>SpotTransfer</h1>
-            </div>
+            <h1>SpotTransfer</h1>
 
-            <div class="section">
-                <h2>Connect YouTube</h2>
+            <section>
+                <h2>YouTube Music</h2>
                 {% if youtube_authenticated %}
-                <div class="status-box success-box">
-                    YouTube Music Connected
-                </div>
-                <button class="secondary" onclick="handleDisconnect()">
-                    Disconnect
-                </button>
+                <p class="status-connected">Connected</p>
+                <button onclick="handleDisconnect()">Disconnect</button>
                 {% else %}
-                <div class="status-box warning-box">
-                    Please connect your YouTube account to continue
-                </div>
+                <p class="status-disconnected">Not connected</p>
                 <a href="/authorize">
                     <button>Connect YouTube Account</button>
                 </a>
-                <div class="info-box" style="margin-top: 1rem">
-                    <strong>Note:</strong> YouTube API has a daily quota limit
-                    that can impact transfers.
-                </div>
+                <p class="note">Note: YouTube API has daily quota limits</p>
                 {% endif %}
-            </div>
+            </section>
 
-            <hr />
-
-            <div class="section">
+            <section>
                 <h2>Transfer Playlist</h2>
+                <label for="playlistUrl">Spotify Playlist URL</label>
                 <input
                     type="text"
                     id="playlistUrl"
@@ -66,37 +54,39 @@
                 >
                     Start Transfer
                 </button>
-            </div>
+            </section>
 
-            <div class="progress-container" id="progressContainer">
+            <section id="progressContainer" style="display: none">
+                <h2>Transfer Progress</h2>
+
                 <div class="progress-bar">
-                    <div class="progress-fill" id="progressFill">0%</div>
+                    <div class="progress-fill" id="progressFill">
+                        <span class="progress-text">0%</span>
+                    </div>
                 </div>
 
                 <div class="stats">
-                    <div class="stat-box">
-                        <div class="label">Total</div>
-                        <div class="value" id="totalTracks">0</div>
+                    <div class="stat">
+                        <span class="label">Total</span>
+                        <span class="value" id="totalTracks">0</span>
                     </div>
-                    <div class="stat-box">
-                        <div class="label">Added</div>
-                        <div class="value" id="addedTracks">0</div>
+                    <div class="stat">
+                        <span class="label">Added</span>
+                        <span class="value" id="addedTracks">0</span>
                     </div>
-                    <div class="stat-box">
-                        <div class="label">Not Found</div>
-                        <div class="value" id="notFoundTracks">0</div>
+                    <div class="stat">
+                        <span class="label">Not Found</span>
+                        <span class="value" id="notFoundTracks">0</span>
                     </div>
                 </div>
 
-                <div class="current-track" id="currentTrack">
+                <div class="track-status" id="currentTrack">
                     <span class="spinner"></span> Initializing...
                 </div>
 
                 <div id="quotaWarning"></div>
                 <div id="notFoundContainer"></div>
-            </div>
-
-            <hr />
+            </section>
         </div>
 
         <script src="/static/script.js"></script>
