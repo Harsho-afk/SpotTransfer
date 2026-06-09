@@ -5,7 +5,6 @@ A Flask web application that transfers your Spotify playlists to YouTube Music.
 ## Features
 
 - OAuth 2.0 authentication for YouTube Music
-- Redis caching for playlist data and search results
 - Handles large playlists with pagination
 - Preserves playlist name and description
 - Track-by-track transfer with status updates
@@ -15,7 +14,6 @@ A Flask web application that transfers your Spotify playlists to YouTube Music.
 ## Prerequisites
 
 - Python 3.6 or higher
-- Redis server
 - Spotify Developer account and API credentials
 - Google Cloud project with YouTube Data API v3 enabled
 - OAuth 2.0 credentials for YouTube
@@ -33,14 +31,7 @@ A Flask web application that transfers your Spotify playlists to YouTube Music.
    pip install -r requirements.txt
    ```
 
-3. Set up Redis:
-   - Install Redis on your system
-   - Start the Redis server:
-     ```bash
-     redis-server
-     ```
-
-4. Configure environment variables:
+3. Configure environment variables:
    - Copy `.env.example` to `.env`
    - Fill in your API credentials (see Configuration section below)
 
@@ -56,10 +47,6 @@ GOOGLE_CLIENT_SECRET=your_google_client_secret
 REDIRECT_URI=http://localhost:5000/oauth2callback
 FLASK_SECRET_KEY=your_random_secret_key
 FLASK_DEVELOPMENT=FALSE
-REDIS_HOST=localhost
-REDIS_PORT=6379
-REDIS_DB=0
-REDIS_PASSWORD=
 ```
 
 ### Environment Variables Explained
@@ -71,10 +58,6 @@ REDIS_PASSWORD=
 - `REDIRECT_URI`: OAuth callback URL (must match Google Cloud Console configuration)
 - `FLASK_SECRET_KEY`: Random secret key for Flask sessions (generate a strong random string)
 - `FLASK_DEVELOPMENT`: Set to TRUE for local development, FALSE for production
-- `REDIS_HOST`: Redis server hostname
-- `REDIS_PORT`: Redis server port
-- `REDIS_DB`: Redis database number
-- `REDIS_PASSWORD`: Redis password (leave empty if not configured)
 
 ## Setting Up API Access
 
@@ -110,8 +93,7 @@ Note: The YouTube Data API has daily quota limits. The application will notify y
 
 3. Connect your YouTube account:
    - Click "Connect YouTube Account"
-   - Authorize the application in the popup window
-   - The popup will close automatically after authorization
+   - Authorize the application
 
 4. Transfer a playlist:
    - Paste your Spotify playlist URL in the input field

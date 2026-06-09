@@ -17,7 +17,6 @@ import os
 import re
 import json
 import time
-import redis
 from datetime import timedelta
 from dotenv import load_dotenv
 import spotipy
@@ -33,8 +32,6 @@ load_dotenv()
 if os.environ.get("FLASK_DEVELOPMENT") == "TRUE":
     os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-SPOTIFY_CACHE_PREFIX = "spottransfer:spotify:"
-SPOTIFY_CACHE_TTL = 3600  # 1 hour
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 SPOTIFY_PLAYLIST_REGEX = re.compile(
     r"^https://open\.spotify\.com/playlist/[A-Za-z0-9]+(\?.*)?$"
@@ -44,27 +41,9 @@ SPOTIFY_PLAYLIST_REGEX = re.compile(
 app = Flask(__name__)
 app.logger.setLevel(logging.CRITICAL)
 
-
-def create_redis_client(decode_responses=True):
-    """Create a Redis client with common configuration"""
-    return redis.Redis(
-        host=os.environ.get("REDIS_HOST", "localhost"),
-        port=int(os.environ.get("REDIS_PORT", 6379)),
-        db=int(os.environ.get("REDIS_DB", 0)),
-        username=os.environ.get("REDIS_USERNAME", "default"),
-        password=os.environ.get("REDIS_PASSWORD", None),
-        decode_responses=decode_responses,
-    )
-
-
-redis_session_client = create_redis_client(decode_responses=False)  # binary data
-redis_client = create_redis_client(decode_responses=True)  # string data
-
 app.config.update(
     SECRET_KEY=os.environ.get("FLASK_SECRET_KEY"),
-    SESSION_TYPE="redis",
-    SESSION_REDIS=redis_session_client,
-    SESSION_USE_SIGNER=True,
+    SESSION_TYPE="filesystem",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=not app.debug,
@@ -77,7 +56,6 @@ csrf = CSRFProtect(app)
 limiter = Limiter(
     key_func=get_remote_address,
     app=app,
-    storage_uri=os.environ.get("REDIS_URL"),
     default_limits=["200 per day", "50 per hour"],
 )
 
@@ -194,37 +172,6 @@ def fetch_spotify_playlist(spotify_client, playlist_id):
     return playlist_name, playlist_desc, track_names
 
 
-def get_cached_playlist(playlist_id):
-    """Get cached playlist data from Redis"""
-    try:
-        cache_key = f"{SPOTIFY_CACHE_PREFIX}playlist:{playlist_id}"
-        cached_data = redis_client.get(cache_key)
-        if cached_data:
-            redis_client.expire(cache_key, SPOTIFY_CACHE_TTL)
-            return json.loads(cached_data)
-        return None
-    except redis.RedisError as e:
-        app.logger.debug(f"Redis cache read error: {e}")
-        return None
-    except json.JSONDecodeError as e:
-        app.logger.debug(f"Cache data decode error: {e}")
-        return None
-    except Exception as e:
-        app.logger.debug(f"Unexpected cache error: {e}")
-        return None
-
-
-def cache_playlist(playlist_id, data):
-    """Cache playlist data in Redis"""
-    try:
-        cache_key = f"{SPOTIFY_CACHE_PREFIX}playlist:{playlist_id}"
-        redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, json.dumps(data))
-    except redis.RedisError as e:
-        app.logger.debug(f"Redis cache write error: {e}")
-    except Exception as e:
-        app.logger.debug(f"Unexpected cache write error: {e}")
-
-
 def get_ytclient_config():
     """Get Google OAuth client configuration"""
     return {
@@ -241,12 +188,6 @@ def get_ytclient_config():
 def search_youtube_music(youtube, query):
     """Search for a song on YouTube Music"""
     try:
-        cache_key = f"{SPOTIFY_CACHE_PREFIX}search:{query}"
-        cached_result = redis_client.get(cache_key)
-        if cached_result:
-            redis_client.expire(cache_key, SPOTIFY_CACHE_TTL)
-            return cached_result
-
         search_response = (
             youtube.search()
             .list(
@@ -260,12 +201,7 @@ def search_youtube_music(youtube, query):
         )
 
         if search_response.get("items"):
-            video_id = search_response["items"][0]["id"]["videoId"]
-            try:
-                redis_client.setex(cache_key, SPOTIFY_CACHE_TTL, video_id)
-            except redis.RedisError as e:
-                app.logger.debug(f"Failed to cache search result: {e}")
-            return video_id
+            return search_response["items"][0]["id"]["videoId"]
 
         return None
 
@@ -328,11 +264,9 @@ def add_to_youtube_playlist(youtube, playlist_id, video_id, max_retries=3):
             status_code = e.resp.status
 
             if status_code == 409:
-                # video might already be in playlist or temporary issue
                 if "duplicate" in error_details.lower():
                     return True
 
-                # SERVICE_UNAVAILABLE: retry with backoff
                 if attempt < max_retries - 1:
                     wait_time = (attempt + 1) * 2
                     time.sleep(wait_time)
@@ -372,26 +306,6 @@ def rate_limit_exceeded(e):
         jsonify({"error": "Too many requests. Please slow down and try again later."}),
         429,
     )
-
-
-@app.errorhandler(Exception)
-def handle_redis_decode_error(e):
-    """Handle Redis decode errors by clearing the session"""
-    if "UnicodeDecodeError" in str(type(e)) or "decode" in str(e).lower():
-        # For JSON endpoints, return JSON error
-        if request.path.startswith(("/complete_auth", "/transfer", "/cache_stats")):
-            return (
-                jsonify(
-                    {
-                        "error": "Session corrupted. Please clear your browser cookies and try again."
-                    }
-                ),
-                500,
-            )
-        response = make_response(redirect(url_for("index")))
-        response.set_cookie("spottransfer_session", "", expires=0)
-        return response
-    raise e
 
 
 @app.route("/")
@@ -510,50 +424,29 @@ def transfer():
         return internal_error("Spotify API credentials not configured properly")
 
     try:
-        # Try to get cached playlist data first
-        cached_data = get_cached_playlist(playlist_id)
-
-        if cached_data:
-            playlist_name = cached_data["name"]
-            playlist_desc = cached_data["description"]
-            track_names = cached_data["tracks"]
-        else:
-            # Fetch from Spotify API
-            try:
-                playlist_name, playlist_desc, track_names = fetch_spotify_playlist(
-                    spotify_client, playlist_id
-                )
-            except ValueError as e:
-                # User-facing Spotify errors
-                return jsonify({"error": str(e)}), 400
-            except SpotifyException as e:
-                app.logger.exception(f"Spotify API error: {e}")
-                return (
-                    jsonify(
-                        {
-                            "error": "Failed to fetch playlist from Spotify. Please try again."
-                        }
-                    ),
-                    500,
-                )
-
-            if not track_names:
-                return (
-                    jsonify({"error": "Playlist is empty or has no accessible tracks"}),
-                    400,
-                )
-
-            # Cache the playlist data
-            cache_playlist(
-                playlist_id,
-                {
-                    "name": playlist_name,
-                    "description": playlist_desc,
-                    "tracks": track_names,
-                },
+        try:
+            playlist_name, playlist_desc, track_names = fetch_spotify_playlist(
+                spotify_client, playlist_id
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except SpotifyException as e:
+            app.logger.exception(f"Spotify API error: {e}")
+            return (
+                jsonify(
+                    {
+                        "error": "Failed to fetch playlist from Spotify. Please try again."
+                    }
+                ),
+                500,
             )
 
-        # Validate credentials
+        if not track_names:
+            return (
+                jsonify({"error": "Playlist is empty or has no accessible tracks"}),
+                400,
+            )
+
         creds_data = session.get("credentials")
         if not isinstance(creds_data, dict):
             session.clear()
@@ -564,7 +457,6 @@ def transfer():
                 401,
             )
 
-        # Build YouTube client
         try:
             youtube = build("youtube", "v3", credentials=Credentials(**creds_data))
         except Exception as e:
@@ -579,7 +471,6 @@ def transfer():
                 401,
             )
 
-        # Create YouTube playlist
         try:
             yt_playlist_id = create_youtube_playlist(
                 youtube,
@@ -625,10 +516,6 @@ def transfer():
                 429,
             )
         return internal_error("YouTube API error occurred. Please try again.")
-
-    except redis.RedisError as e:
-        app.logger.exception(f"Redis error during transfer: {e}")
-        return internal_error("Cache error occurred. Please try again.")
 
     except Exception as e:
         app.logger.exception(f"Unexpected error during playlist transfer: {e}")
@@ -734,11 +621,4 @@ def transfer_track():
 
 
 if __name__ == "__main__":
-    try:
-        redis_client.ping()
-        app.logger.info("Redis connection successful")
-    except Exception:
-        app.logger.warning("✗ Redis connection failed")
-        app.logger.warning("Please ensure Redis is running: redis-server")
-
     app.run(debug=True, port=5000)
