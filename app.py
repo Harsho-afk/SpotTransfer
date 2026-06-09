@@ -6,12 +6,8 @@ from flask import (
     url_for,
     session,
     jsonify,
-    make_response,
 )
-from flask_session import Session
 from flask_wtf.csrf import CSRFProtect
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 import logging
 import os
 import re
@@ -43,21 +39,13 @@ app.logger.setLevel(logging.CRITICAL)
 
 app.config.update(
     SECRET_KEY=os.environ.get("FLASK_SECRET_KEY"),
-    SESSION_TYPE="filesystem",
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     SESSION_COOKIE_SECURE=not app.debug,
     PERMANENT_SESSION_LIFETIME=timedelta(hours=6),
 )
 
-Session(app)
 csrf = CSRFProtect(app)
-
-limiter = Limiter(
-    key_func=get_remote_address,
-    app=app,
-    default_limits=["200 per day", "50 per hour"],
-)
 
 
 def internal_error(message="Internal server error"):
@@ -300,14 +288,6 @@ def add_to_youtube_playlist(youtube, playlist_id, video_id, max_retries=3):
     return False
 
 
-@app.errorhandler(429)
-def rate_limit_exceeded(e):
-    return (
-        jsonify({"error": "Too many requests. Please slow down and try again later."}),
-        429,
-    )
-
-
 @app.route("/")
 def index():
     """Main page"""
@@ -383,7 +363,6 @@ def oauth2callback():
 
 
 @app.route("/disconnect")
-@limiter.limit("10 per minute")
 def disconnect():
     """Disconnect YouTube account"""
     session.clear()
@@ -391,7 +370,6 @@ def disconnect():
 
 
 @app.route("/transfer", methods=["POST"])
-@limiter.limit("5 per hour")
 def transfer():
     """Transfer a Spotify playlist to YouTube Music"""
     if "credentials" not in session:
@@ -523,7 +501,6 @@ def transfer():
 
 
 @app.route("/transfer_track", methods=["POST"])
-@limiter.limit("30 per minute")
 def transfer_track():
     """Transfer a single track to YouTube Music playlist"""
     if "credentials" not in session:
