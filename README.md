@@ -7,9 +7,14 @@ A Flask web application that transfers your Spotify playlists to YouTube Music.
 - OAuth 2.0 authentication for YouTube Music
 - Handles large playlists with pagination
 - Preserves playlist name and description
-- Track-by-track transfer with status updates
-- YouTube API quota management and error handling
+- Creates transferred playlist as private by default
+- Searches YouTube Music category specifically (not general YouTube)
+- Track-by-track transfer with real-time progress updates
+- Per-track retry logic with exponential backoff
+- YouTube API quota detection with graceful degradation
+- Rate limited to 5 transfers per hour
 - Lists tracks that could not be found on YouTube Music
+- CSRF protection on all POST endpoints
 
 ## Prerequisites
 
@@ -46,7 +51,7 @@ GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
 REDIRECT_URI=http://localhost:5000/oauth2callback
 FLASK_SECRET_KEY=your_random_secret_key
-FLASK_DEVELOPMENT=FALSE
+FLASK_DEVELOPMENT=TRUE
 ```
 
 ### Environment Variables Explained
@@ -57,7 +62,7 @@ FLASK_DEVELOPMENT=FALSE
 - `GOOGLE_CLIENT_SECRET`: Your Google OAuth 2.0 client secret
 - `REDIRECT_URI`: OAuth callback URL (must match Google Cloud Console configuration)
 - `FLASK_SECRET_KEY`: Random secret key for Flask sessions (generate a strong random string)
-- `FLASK_DEVELOPMENT`: Set to TRUE for local development, FALSE for production
+- `FLASK_DEVELOPMENT`: Set to `TRUE` for local development (enables HTTP for OAuth), `FALSE` for production
 
 ## Setting Up API Access
 
@@ -77,7 +82,7 @@ FLASK_DEVELOPMENT=FALSE
    - Authorized redirect URIs: `http://localhost:5000/oauth2callback`
 4. Download the credentials and add the Client ID and Client Secret to your `.env` file
 
-Note: The YouTube Data API has daily quota limits. The application will notify you if the quota is exceeded.
+> **Note:** The YouTube Data API has daily quota limits. The application detects quota exhaustion mid-transfer and stops gracefully, reporting which tracks were completed and which were not. Quota resets daily at midnight Pacific Time.
 
 ## Usage
 
@@ -102,11 +107,19 @@ Note: The YouTube Data API has daily quota limits. The application will notify y
    - Monitor the real-time progress as tracks are transferred
 
 5. The application will:
-   - Fetch all tracks from the Spotify playlist
+   - Fetch all tracks from the Spotify playlist (including paginated playlists)
    - Create a new private playlist on YouTube Music
-   - Search for each track on YouTube Music
+   - Search YouTube Music specifically for each track
    - Add found tracks to the playlist
    - Display a list of tracks that could not be found
+
+> **Note:** Transfers are rate limited to 5 per hour per session.
+
+## Deployment
+
+The project includes a `vercel.json` for deployment on Vercel. The app uses `gunicorn` as the production WSGI server.
+
+For production deployment, set `FLASK_DEVELOPMENT=FALSE` in your environment variables and ensure your `REDIRECT_URI` matches the deployed URL configured in Google Cloud Console.
 
 ## Project Structure
 
@@ -114,13 +127,14 @@ Note: The YouTube Data API has daily quota limits. The application will notify y
 spottransfer/
 ├── app.py                 # Main Flask application
 ├── requirements.txt       # Python dependencies
-├── .env.example          # Environment variables template
-├── .gitignore            # Git ignore rules
+├── vercel.json            # Vercel deployment config
+├── .env.example           # Environment variables template
+├── .gitignore             # Git ignore rules
 ├── static/
-│   ├── script.js         # Frontend JavaScript
-│   └── style.css         # Application styles
+│   ├── script.js          # Frontend JavaScript
+│   └── style.css          # Application styles
 └── templates/
-    └── index.html        # Main HTML template
+    └── index.html         # Main HTML template
 ```
 
 ## License
